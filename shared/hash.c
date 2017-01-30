@@ -137,13 +137,8 @@ static inline unsigned int hash_superfast(const char *key, unsigned int len)
 	return hash;
 }
 
-/*
- * add or replace key in hash map.
- *
- * none of key or value are copied, just references are remembered as is,
- * make sure they are live while pair exists in hash!
- */
-int hash_add(struct hash *hash, const char *key, const void *value)
+static struct hash_entry *hash_add_entry(struct hash *hash,
+					const char *key, const void *value)
 {
 	unsigned int keylen = strlen(key);
 	unsigned int hashval = hash_superfast(key, keylen);
@@ -156,50 +151,7 @@ int hash_add(struct hash *hash, const char *key, const void *value)
 		size_t size = new_total * sizeof(struct hash_entry);
 		struct hash_entry *tmp = realloc(bucket->entries, size);
 		if (tmp == NULL)
-			return -errno;
-		bucket->entries = tmp;
-		bucket->total = new_total;
-	}
-
-	entry = bucket->entries;
-	entry_end = entry + bucket->used;
-	for (; entry < entry_end; entry++) {
-		int c = strcmp(key, entry->key);
-		if (c == 0) {
-			if (hash->free_value)
-				hash->free_value((void *)entry->value);
-			entry->key = key;
-			entry->value = value;
-			return 0;
-		} else if (c < 0) {
-			memmove(entry + 1, entry,
-				(entry_end - entry) * sizeof(struct hash_entry));
-			break;
-		}
-	}
-
-	entry->key = key;
-	entry->value = value;
-	bucket->used++;
-	hash->count++;
-	return 0;
-}
-
-/* similar to hash_add(), but fails if key already exists */
-int hash_add_unique(struct hash *hash, const char *key, const void *value)
-{
-	unsigned int keylen = strlen(key);
-	unsigned int hashval = hash_superfast(key, keylen);
-	unsigned int pos = hashval & (hash->n_buckets - 1);
-	struct hash_bucket *bucket = hash->buckets + pos;
-	struct hash_entry *entry, *entry_end;
-
-	if (bucket->used + 1 >= bucket->total) {
-		unsigned new_total = bucket->total + hash->step;
-		size_t size = new_total * sizeof(struct hash_entry);
-		struct hash_entry *tmp = realloc(bucket->entries, size);
-		if (tmp == NULL)
-			return -errno;
+			return NULL;
 		bucket->entries = tmp;
 		bucket->total = new_total;
 	}
@@ -209,18 +161,58 @@ int hash_add_unique(struct hash *hash, const char *key, const void *value)
 	for (; entry < entry_end; entry++) {
 		int c = strcmp(key, entry->key);
 		if (c == 0)
-			return -EEXIST;
-		else if (c < 0) {
+			return entry;
+		if (c < 0) {
 			memmove(entry + 1, entry,
 				(entry_end - entry) * sizeof(struct hash_entry));
 			break;
 		}
 	}
 
-	entry->key = key;
-	entry->value = value;
 	bucket->used++;
 	hash->count++;
+
+	entry->key = entry->value = NULL;
+
+	return entry;
+}
+
+/*
+ * add or replace key in hash map.
+ *
+ * none of key or value are copied, just references are remembered as is,
+ * make sure they are live while pair exists in hash!
+ */
+int hash_add(struct hash *hash, const char *key, const void *value)
+{
+	struct hash_entry *entry = hash_add_entry(hash, key, value);
+
+	if (!entry)
+		return -errno;
+
+	if (hash->free_value)
+		hash->free_value((void *)entry->value);
+
+	entry->key = key;
+	entry->value = value;
+
+	return 0;
+}
+
+/* similar to hash_add(), but fails if key already exists */
+int hash_add_unique(struct hash *hash, const char *key, const void *value)
+{
+	struct hash_entry *entry = hash_add_entry(hash, key, value);
+
+	if (!entry)
+		return -errno;
+
+	if (entry->key || entry->value)
+		return -EEXIST;
+
+	entry->key = key;
+	entry->value = value;
+
 	return 0;
 }
 
